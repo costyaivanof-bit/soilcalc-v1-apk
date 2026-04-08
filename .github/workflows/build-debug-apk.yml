@@ -15,7 +15,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -30,19 +30,61 @@ jobs:
         with:
           gradle-version: 8.7
 
-      - name: Unzip project
+      - name: Unzip project and detect folder
         run: |
           unzip -q soilcalc_v1_android_project.zip
-          cd soilcalc_v1_project
-          test -f settings.gradle.kts
+          PROJECT_DIR=$(find . -maxdepth 3 -type f -name "settings.gradle.kts" -not -path "./.github/*" | sed 's|/settings.gradle.kts||' | head -n 1)
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "Using project dir: $PROJECT_DIR"
+
+      - name: Patch theme and dependencies
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          project_dir = Path(os.environ["PROJECT_DIR"])
+          app_dir = project_dir / "app"
+          gradle_file = app_dir / "build.gradle.kts"
+          themes = [
+              app_dir / "src" / "main" / "res" / "values" / "themes.xml",
+              app_dir / "src" / "main" / "res" / "values-night" / "themes.xml",
+          ]
+
+          # 1) Fix XML theme parent
+          for tf in themes:
+              if tf.exists():
+                  text = tf.read_text(encoding="utf-8")
+                  text = text.replace(
+                      "Theme.Material3.DayNight.NoActionBar",
+                      "Theme.MaterialComponents.DayNight.NoActionBar"
+                  )
+                  tf.write_text(text, encoding="utf-8")
+                  print("Patched theme:", tf)
+
+          # 2) Ensure Material Components dependency exists
+          if gradle_file.exists():
+              text = gradle_file.read_text(encoding="utf-8")
+              dep = '    implementation("com.google.android.material:material:1.12.0")'
+              if "com.google.android.material:material:" not in text:
+                  marker = '    implementation("androidx.compose.material3:material3")'
+                  if marker in text:
+                      text = text.replace(marker, marker + "\n" + dep)
+                  else:
+                      text = text.replace("dependencies {\n", "dependencies {\n" + dep + "\n")
+                  gradle_file.write_text(text, encoding="utf-8")
+                  print("Added material dependency")
+              else:
+                  print("Material dependency already present")
+          PY
 
       - name: Build debug APK
         run: |
-          cd soilcalc_v1_project
+          cd "$PROJECT_DIR"
           gradle assembleDebug --stacktrace
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: soilcalc-debug-apk
-          path: soilcalc_v1_project/app/build/outputs/apk/debug/*.apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
